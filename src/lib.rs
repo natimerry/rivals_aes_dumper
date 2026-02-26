@@ -1,9 +1,9 @@
 #![allow(non_snake_case)]
 #![allow(unsafe_op_in_unsafe_fn)]
-use libwinexploit::hooking::pattern::{Pattern, PatternScanOption};
 use libwinexploit::hooking::HookEntry;
+use libwinexploit::hooking::pattern::{Pattern, PatternScanOption};
 use libwinexploit::runtime::pe64_runtime::PE64Runtime;
-use libwinexploit::winapi::{DisableThreadLibraryCalls, BOOL, DWORD, HINSTANCE, LPVOID};
+use libwinexploit::winapi::{BOOL, DWORD, DisableThreadLibraryCalls, HINSTANCE, LPVOID};
 use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -26,18 +26,13 @@ static LOG_FILE: LazyLock<Mutex<std::fs::File>> = LazyLock::new(|| {
 
 static SEEN_KEYS: LazyLock<Mutex<HashSet<Vec<u8>>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
-static ORIGINAL_AES_DEC: AtomicPtr<()> = AtomicPtr::new(null_mut());
+static TRAMPOLINE_AES: AtomicPtr<()> = AtomicPtr::new(null_mut());
 
 const DLL_PROCESS_ATTACH: DWORD = 1;
 
-// ─────────────────────────────────────────────────────────────
-// Prologue signature for aes_dec1:
-//   48 8B C4              MOV RAX, RSP
-//   48 81 EC ?? 00 00 00  SUB RSP, ??        <- frame size
-//   F3 0F 6F 51 10        MOVDQU XMM2, [RCX+16]   <- key high half
-//   F3 0F 6F 21           MOVDQU XMM4, [RCX]      <- key low half
-// ─────────────────────────────────────────────────────────────
-const AES_DEC1_PATTERN: &str = "48 8B C4 48 81 EC ?? 00 00 00 F3 0F 6F 51 10 F3 0F 6F 21";
+static HOOKED_ADDRS: LazyLock<Mutex<HashSet<u64>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+
+const AES_ENC_DEC_CALLER_PATTERN: &str = "E8 ?? ?? ?? ?? 4C 8B C7 48 8B D6 48 8B CB 84 C0 74 ?? 48 8B 5C 24 ?? 48 8B 74 24 ?? 48 83 C4 ?? 5F E9";
 
 macro_rules! log {
     ($($arg:tt)*) => {{
@@ -49,7 +44,7 @@ macro_rules! log {
 }
 
 // The hook function whick will call and trampoline to execute the actual decrypt logic
-extern "system" fn hook_aes_dec(key_ptr: *const u8, data_ptr: *mut u8, block_count: u64) {
+extern "system" fn hooked_aes_fn(key_ptr: *const u8, data_ptr: *mut u8, block_count: u64) {
     if !key_ptr.is_null() {
         unsafe {
             let key = std::slice::from_raw_parts(key_ptr, 32);
@@ -70,7 +65,7 @@ extern "system" fn hook_aes_dec(key_ptr: *const u8, data_ptr: *mut u8, block_cou
         }
     }
 
-    let orig = ORIGINAL_AES_DEC.load(Ordering::SeqCst);
+    let orig = TRAMPOLINE_AES.load(Ordering::SeqCst);
     if !orig.is_null() {
         unsafe {
             let f: extern "system" fn(*const u8, *mut u8, u64) = std::mem::transmute(orig);
@@ -79,12 +74,35 @@ extern "system" fn hook_aes_dec(key_ptr: *const u8, data_ptr: *mut u8, block_cou
     }
 }
 
+unsafe fn resolve_next_jmp(addr: u64, limit: usize) -> Option<u64> {
+    for i in 0..limit {
+        let byte = *((addr + i as u64) as *const u8);
+        if byte == 0xE9 {
+            let jmp_instr = addr + i as u64;
+            let rel32 = std::ptr::read_unaligned((jmp_instr + 1) as *const i32);
+            let target = jmp_instr.wrapping_add(rel32 as u64).wrapping_add(5);
+            return Some(target);
+        }
+    }
+    log!(
+        "[resolve_jmp] no E9 found within {} bytes of {:#x}",
+        limit,
+        addr
+    );
+    None
+}
+
 unsafe fn install_hook(addr: u64) {
+    if HOOKED_ADDRS.lock().unwrap().contains(&addr) {
+        log!("[install] aes_dec @ {:#x} already hooked", addr);
+        return;
+    }
+
     log!("[install] aes_dec @ {:#x}", addr);
 
-    let mut entry = match HookEntry::new(addr as *mut u8, hook_aes_dec as *mut u8) {
+    let mut entry = match HookEntry::new(addr as *mut u8, hooked_aes_fn as *mut u8) {
         Ok(e) => {
-            ORIGINAL_AES_DEC.store(e.original() as *mut (), Ordering::SeqCst);
+            TRAMPOLINE_AES.store(e.original() as *mut (), Ordering::SeqCst);
             e
         }
         Err(e) => {
@@ -112,13 +130,14 @@ unsafe fn init() -> BOOL {
     let size = module.image_size.min(15826958) as usize;
     log!("base={:p} size={:#x}", base, size);
 
-    let mut pattern = match Pattern::from(AES_DEC1_PATTERN) {
+    let mut pattern = match Pattern::from(AES_ENC_DEC_CALLER_PATTERN) {
         Ok(p) => p,
         Err(e) => {
             log!("Pattern::from failed: {:?}", e);
             return 1;
         }
     };
+    let mut vec_addr = HashSet::new();
 
     match pattern.scan(base, size, PatternScanOption::Begin) {
         Some(addrs) if addrs.is_empty() => {
@@ -127,18 +146,19 @@ unsafe fn init() -> BOOL {
         Some(addrs) => {
             for addr in &addrs {
                 log!("[scan]   {:p}", addr);
+                let limit = AES_ENC_DEC_CALLER_PATTERN.split_whitespace().count();
+
+                let call_addr = resolve_next_jmp(*addr as u64, limit).unwrap();
+                vec_addr.insert(call_addr);
             }
-            // Only hook the first match — pattern should be unique
-            if addrs.len() > 1 {
-                log!(
-                    "[scan] WARNING: multiple matches, pattern may not be unique — hooking first only"
-                );
-            }
-            install_hook(*addrs.first().unwrap() as u64);
         }
         None => {
             log!("[scan] Scan failed (wtf?)");
         }
+    }
+
+    for addr in vec_addr {
+        install_hook(addr);
     }
 
     0
