@@ -1,0 +1,22 @@
+[package]
+name = "ue5_aes_extracter"
+version = "1.0.0"
+edition = "2024"
+authors = ["natimerry"]
+
+[lib]
+name = "ue5_aes_extracter"
+crate-type = ["cdylib"]
+
+[dependencies]
+libwinexploit = {
+    git = "https://github.com/natimerry/libwinexploit",
+    rev = "0b9a51237dc9e95d16ea3c1f0a6364ab72c5b1f7",
+    features = ["runtime"]
+}
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+strip = true
