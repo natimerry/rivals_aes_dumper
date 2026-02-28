@@ -3,26 +3,15 @@
 use libwinexploit::hooking::HookEntry;
 use libwinexploit::hooking::pattern::{Pattern, PatternScanOption};
 use libwinexploit::runtime::pe64_runtime::PE64Runtime;
-use libwinexploit::winapi::{BOOL, DWORD, DisableThreadLibraryCalls, HINSTANCE, LPVOID};
+use libwinexploit::winapi::AllocConsole;
+use libwinexploit::winapi::{
+    BOOL, DWORD, DisableThreadLibraryCalls, HINSTANCE, LPVOID, MessageBoxA, SetConsoleCtrlHandler,
+};
 use std::collections::HashSet;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::thread;
-
-const LOG_FILE_PATH: &str = "C:\\aes_extract_log.txt";
-
-static LOG_FILE: LazyLock<Mutex<std::fs::File>> = LazyLock::new(|| {
-    Mutex::new(
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(LOG_FILE_PATH)
-            .expect("failed to open log"),
-    )
-});
 
 static SEEN_KEYS: LazyLock<Mutex<HashSet<Vec<u8>>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
@@ -34,12 +23,11 @@ static HOOKED_ADDRS: LazyLock<Mutex<HashSet<u64>>> = LazyLock::new(|| Mutex::new
 
 const AES_ENC_DEC_CALLER_PATTERN: &str = "E8 ?? ?? ?? ?? 4C 8B C7 48 8B D6 48 8B CB 84 C0 74 ?? 48 8B 5C 24 ?? 48 8B 74 24 ?? 48 83 C4 ?? 5F E9";
 
+#[cfg(debug_assertions)]
 macro_rules! log {
     ($($arg:tt)*) => {{
         let msg = format!($($arg)*);
-        if let Ok(mut f) = LOG_FILE.lock() {
-            let _ = writeln!(f, "{}", msg);
-        }
+        println!("{}", msg);
     }};
 }
 
@@ -172,6 +160,29 @@ pub unsafe extern "system" fn DllMain(
 ) -> BOOL {
     if fdw_reason == DLL_PROCESS_ATTACH {
         DisableThreadLibraryCalls(hinst_dll as *mut _);
+
+        #[cfg(debug_assertions)]
+        AllocConsole();
+
+        unsafe extern "C" fn ctrl_handler(_ctrl_type: u32) -> BOOL {
+            log!("Process crashed or exited - press any key to close...");
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input).ok();
+            0
+        }
+        SetConsoleCtrlHandler(Some(ctrl_handler), 1);
+
+        std::panic::set_hook(Box::new(|info| {
+            let msg = format!("{}\0", info);
+            log!("PANIC: {}", info);
+            let caption = b"DLL Panic\0";
+            MessageBoxA(
+                std::ptr::null_mut(),
+                msg.as_ptr() as *const _,
+                caption.as_ptr() as *const _,
+                0x10,
+            );
+        }));
 
         log!("AES Dumper loaded!!");
         thread::spawn(|| unsafe { init() });
