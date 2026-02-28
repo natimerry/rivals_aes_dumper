@@ -43,13 +43,13 @@ jobs:
           $out = "dist"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
 
-          Copy-Item "target\x86_64-pc-windows-msvc\release\ue5_aes_extracter.dll" "$out\ue5_aes_extracter.dll"
-          Copy-Item "target\x86_64-pc-windows-msvc\release\ue5_aes_extracter.dll" "$out\ue5_aes_extracter.asi"
+          Copy-Item "target\x86_64-pc-windows-msvc\release\rivals_aes_dumper.dll" "$out\rivals_aes_dumper.dll"
+          Copy-Item "target\x86_64-pc-windows-msvc\release\rivals_aes_dumper.dll" "$out\rivals_aes_dumper.asi"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ue5_aes_extracter
+          name: rivals_aes_dumper
           path: dist\*
           if-no-files-found: error
 
@@ -65,13 +65,13 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: ue5_aes_extracter
+          name: rivals_aes_dumper
           path: dist
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/ue5_aes_extracter.dll
-            dist/ue5_aes_extracter.asi
+            dist/rivals_aes_dumper.dll
+            dist/rivals_aes_dumper.asi
           generate_release_notes: true
