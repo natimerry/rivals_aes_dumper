@@ -23,14 +23,6 @@ static HOOKED_ADDRS: LazyLock<Mutex<HashSet<u64>>> = LazyLock::new(|| Mutex::new
 
 const AES_ENC_DEC_CALLER_PATTERN: &str = "E8 ?? ?? ?? ?? 4C 8B C7 48 8B D6 48 8B CB 84 C0 74 ?? 48 8B 5C 24 ?? 48 8B 74 24 ?? 48 83 C4 ?? 5F E9";
 
-#[cfg(debug_assertions)]
-macro_rules! log {
-    ($($arg:tt)*) => {{
-        let msg = format!($($arg)*);
-        println!("{}", msg);
-    }};
-}
-
 // The hook function whick will call and trampoline to execute the actual decrypt logic
 extern "system" fn hooked_aes_fn(key_ptr: *const u8, data_ptr: *mut u8, block_count: u64) {
     if !key_ptr.is_null() {
@@ -47,7 +39,7 @@ extern "system" fn hooked_aes_fn(key_ptr: *const u8, data_ptr: *mut u8, block_co
                         write!(&mut hex, "{:02x}", b).unwrap();
                     }
 
-                    log!("[AES-256 KEY] {}", hex);
+                    println!("[AES-256 KEY] {}", hex);
                 }
             }
         }
@@ -72,21 +64,20 @@ unsafe fn resolve_next_jmp(addr: u64, limit: usize) -> Option<u64> {
             return Some(target);
         }
     }
-    log!(
+    println!(
         "[resolve_jmp] no E9 found within {} bytes of {:#x}",
-        limit,
-        addr
+        limit, addr
     );
     None
 }
 
 unsafe fn install_hook(addr: u64) {
     if HOOKED_ADDRS.lock().unwrap().contains(&addr) {
-        log!("[install] aes_dec @ {:#x} already hooked", addr);
+        println!("[install] aes_dec @ {:#x} already hooked", addr);
         return;
     }
 
-    log!("[install] aes_dec @ {:#x}", addr);
+    println!("[install] aes_dec @ {:#x}", addr);
 
     let mut entry = match HookEntry::new(addr as *mut u8, hooked_aes_fn as *mut u8) {
         Ok(e) => {
@@ -94,14 +85,14 @@ unsafe fn install_hook(addr: u64) {
             e
         }
         Err(e) => {
-            log!("[install] HookEntry failed: {:?}", e);
+            println!("[install] HookEntry failed: {:?}", e);
             return;
         }
     };
 
     match entry.toggle() {
-        Ok(_) => log!("[install] Hook is active"),
-        Err(e) => log!("[install] Failed to install hook: {:?}", e),
+        Ok(_) => println!("[install] Hook is active"),
+        Err(e) => println!("[install] Failed to install hook: {:?}", e),
     }
 }
 
@@ -109,19 +100,19 @@ unsafe fn init() -> BOOL {
     let module = match PE64Runtime::from_current_module() {
         Ok(m) => m,
         Err(e) => {
-            log!("PE64Runtime failed: {:?}", e);
+            println!("PE64Runtime failed: {:?}", e);
             return 1;
         }
     };
 
     let base = module.module_base as *const u8;
     let size = module.image_size.min(15826958) as usize;
-    log!("base={:p} size={:#x}", base, size);
+    println!("base={:p} size={:#x}", base, size);
 
     let mut pattern = match Pattern::from(AES_ENC_DEC_CALLER_PATTERN) {
         Ok(p) => p,
         Err(e) => {
-            log!("Pattern::from failed: {:?}", e);
+            println!("Pattern::from failed: {:?}", e);
             return 1;
         }
     };
@@ -129,11 +120,11 @@ unsafe fn init() -> BOOL {
 
     match pattern.scan(base, size, PatternScanOption::Begin) {
         Some(addrs) if addrs.is_empty() => {
-            log!("[scan] no matches found — verify pattern against current binary");
+            println!("[scan] no matches found — verify pattern against current binary");
         }
         Some(addrs) => {
             for addr in &addrs {
-                log!("[scan]   {:p}", addr);
+                println!("[scan]   {:p}", addr);
                 let limit = AES_ENC_DEC_CALLER_PATTERN.split_whitespace().count();
 
                 let call_addr = resolve_next_jmp(*addr as u64, limit).unwrap();
@@ -141,7 +132,7 @@ unsafe fn init() -> BOOL {
             }
         }
         None => {
-            log!("[scan] Scan failed (wtf?)");
+            println!("[scan] Scan failed (wtf?)");
         }
     }
 
@@ -165,7 +156,7 @@ pub unsafe extern "system" fn DllMain(
         AllocConsole();
 
         unsafe extern "C" fn ctrl_handler(_ctrl_type: u32) -> BOOL {
-            log!("Process crashed or exited - press any key to close...");
+            println!("Process crashed or exited - press any key to close...");
             let mut input = String::new();
             std::io::stdin().read_line(&mut input).ok();
             0
@@ -174,7 +165,7 @@ pub unsafe extern "system" fn DllMain(
 
         std::panic::set_hook(Box::new(|info| {
             let msg = format!("{}\0", info);
-            log!("PANIC: {}", info);
+            println!("PANIC: {}", info);
             let caption = b"DLL Panic\0";
             MessageBoxA(
                 std::ptr::null_mut(),
@@ -184,7 +175,7 @@ pub unsafe extern "system" fn DllMain(
             );
         }));
 
-        log!("AES Dumper loaded!!");
+        println!("AES Dumper loaded!!");
         thread::spawn(|| unsafe { init() });
     }
     1
