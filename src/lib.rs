@@ -2,6 +2,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 use libwinexploit::hooking::HookEntry;
 use libwinexploit::hooking::pattern::{Pattern, PatternScanOption};
+use libwinexploit::runtime::memory::{LocalMemory, MemoryView};
 use libwinexploit::runtime::pe64_runtime::PE64Runtime;
 use libwinexploit::winapi::AllocConsole;
 use libwinexploit::winapi::{
@@ -79,7 +80,8 @@ unsafe fn install_hook(addr: u64) {
 
     println!("[install] aes_dec @ {:#x}", addr);
 
-    let mut entry = match HookEntry::new(addr as *mut u8, hooked_aes_fn as *mut u8) {
+    let memory = LocalMemory {};
+    let mut entry = match HookEntry::new(addr as *mut u8, hooked_aes_fn as *mut u8, memory) {
         Ok(e) => {
             TRAMPOLINE_AES.store(e.original() as *mut (), Ordering::SeqCst);
             e
@@ -89,8 +91,9 @@ unsafe fn install_hook(addr: u64) {
             return;
         }
     };
+    let memory = LocalMemory {};
 
-    match entry.toggle() {
+    match entry.toggle(&memory) {
         Ok(_) => println!("[install] Hook is active"),
         Err(e) => println!("[install] Failed to install hook: {:?}", e),
     }
@@ -109,27 +112,27 @@ unsafe fn init() -> BOOL {
     let size = module.image_size.min(15826958) as usize;
     println!("base={:p} size={:#x}", base, size);
 
-    let mut pattern = match Pattern::from(AES_ENC_DEC_CALLER_PATTERN) {
+    let pattern = match Pattern::builder().pattern(AES_ENC_DEC_CALLER_PATTERN) {
         Ok(p) => p,
         Err(e) => {
             println!("Pattern::from failed: {:?}", e);
             return 1;
         }
     };
+    let mut pattern = pattern.build();
     let mut vec_addr = HashSet::new();
 
-    match pattern.scan(base, size, PatternScanOption::Begin) {
+    match pattern.scan(&module.memory, base, size, PatternScanOption::Begin) {
         Some(addrs) if addrs.is_empty() => {
             println!("[scan] no matches found — verify pattern against current binary");
         }
         Some(addrs) => {
-            for addr in &addrs {
-                println!("[scan]   {:p}", addr);
-                let limit = AES_ENC_DEC_CALLER_PATTERN.split_whitespace().count();
+            let addr = addrs.first().unwrap();
+            println!("[scan]   {:p}", addr);
+            let limit = AES_ENC_DEC_CALLER_PATTERN.split_whitespace().count();
 
-                let call_addr = resolve_next_jmp(*addr as u64, limit).unwrap();
-                vec_addr.insert(call_addr);
-            }
+            let call_addr = resolve_next_jmp(*addr as u64, limit).unwrap();
+            vec_addr.insert(call_addr);
         }
         None => {
             println!("[scan] Scan failed (wtf?)");
