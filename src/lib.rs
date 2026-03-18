@@ -2,7 +2,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 use libwinexploit::hooking::HookEntry;
 use libwinexploit::hooking::pattern::{Pattern, PatternScanOption};
-use libwinexploit::runtime::memory::MemoryView;
+use libwinexploit::runtime::memory::LocalMemory;
 use libwinexploit::runtime::pe64_runtime::PE64Runtime;
 use libwinexploit::winapi::AllocConsole;
 use libwinexploit::winapi::{
