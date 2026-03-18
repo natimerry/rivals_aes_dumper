@@ -2,7 +2,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 use libwinexploit::hooking::HookEntry;
 use libwinexploit::hooking::pattern::{Pattern, PatternScanOption};
-use libwinexploit::runtime::memory::{LocalMemory, MemoryView};
+use libwinexploit::runtime::memory::MemoryView;
 use libwinexploit::runtime::pe64_runtime::PE64Runtime;
 use libwinexploit::winapi::AllocConsole;
 use libwinexploit::winapi::{
@@ -155,7 +155,6 @@ pub unsafe extern "system" fn DllMain(
     if fdw_reason == DLL_PROCESS_ATTACH {
         DisableThreadLibraryCalls(hinst_dll as *mut _);
 
-        #[cfg(debug_assertions)]
         AllocConsole();
 
         unsafe extern "C" fn ctrl_handler(_ctrl_type: u32) -> BOOL {
